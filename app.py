@@ -6,6 +6,22 @@ import base64
 import requests
 import os
 
+from flask import Flask, request, jsonify
+from anthropic import Anthropic
+import hmac
+import hashlib
+import base64
+import requests
+import os
+import socket
+
+# Force IPv4
+old_getaddrinfo = socket.getaddrinfo
+def new_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    return [r for r in responses if r[0] == socket.AF_INET]
+socket.getaddrinfo = new_getaddrinfo
+
 app = Flask(__name__)
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
