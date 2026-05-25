@@ -27,9 +27,11 @@ app = Flask(__name__)
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID")  # Line ID ของแอดมิน (คุณ)
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 user_conversations = {}
+unanswerable_questions = []  # เก็บคำถามที่ไม่สามารถตอบได้
 
 # ===== TRIPS DATABASE (ข้อมูลทรip ทั้งปี) =====
 trips_database = {
@@ -189,6 +191,20 @@ def get_company_info(info_type):
         return result
     return None
 
+def log_unanswerable_question(user_id, user_message):
+    """บันทึกคำถามที่ไม่สามารถตอบได้และแจ้งเตือน Admin"""
+    from datetime import datetime
+    question_record = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "user_id": user_id,
+        "question": user_message
+    }
+    unanswerable_questions.append(question_record)
+    print(f"[UNANSWERABLE] {question_record}")
+    
+    # ส่งแจ้งเตือนไป Admin Line
+    send_to_admin_line("คำถามใหม่ที่ไม่สามารถตอบได้", question_record)
+
 def verify_line_signature(body, signature):
     hash_obj = hmac.new(
         CHANNEL_SECRET.encode('utf-8'),
@@ -212,6 +228,36 @@ def send_message_to_line(reply_token, text):
         "messages": [{"type": "text", "text": text}]
     }
     requests.post(url, headers=headers, json=payload)
+
+def send_to_admin_line(message, question_details=None):
+    """ส่งข้อความแจ้งเตือนไป Line ของแอดมิน"""
+    if not ADMIN_LINE_ID:
+        print("[WARNING] ADMIN_LINE_ID ไม่ได้กำหนด ข้อความแจ้งเตือนไม่สามารถส่งได้")
+        return
+    
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
+    }
+    
+    text_content = f"❓ [{message}]\n"
+    if question_details:
+        text_content += f"User: {question_details.get('user_id', 'Unknown')}\n"
+        text_content += f"Time: {question_details.get('timestamp', '')}\n"
+        text_content += f"Q: {question_details.get('question', '')}\n\n"
+        text_content += "ตรวจสอบ: /unanswerable-questions"
+    
+    payload = {
+        "to": ADMIN_LINE_ID,
+        "messages": [{"type": "text", "text": text_content}]
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        print(f"[NOTIFICATION SENT] Status: {response.status_code}")
+    except Exception as e:
+        print(f"[ERROR] ไม่สามารถส่งแจ้งเตือนได้: {str(e)}")
 
 def get_bot_response(user_id, user_message):
     if user_id not in user_conversations:
@@ -251,6 +297,7 @@ def get_bot_response(user_id, user_message):
 - ใช้อิโมจิเยอะ (3-4 เท่านั้น ต่อการตอบ)
 - ตอบหลายๆ คำถามในครั้งเดียว (ตอบทีละคำถาม)
 
+
 === ฐานข้อมูลทริป (Database Available) ===
 มีข้อมูลทริปเต็มปี 12 เดือน: June, July, August, September, October, November, December, January, February, March, April, May
 - เมื่อลูกค้าถาม "เดือนไหนมีที่เที่ยว" ให้ตอบจาก trips_database
@@ -276,7 +323,20 @@ Website: https://weena2d1n.com/
 • กระชับ: อ่านจบใน 5 วินาที
 • ใจเย็น: ไม่เร่งลูกค้า
 • ไว้ใจ: ส่งลิงก์เมื่อลูกค้าพร้อม
-• ใจเปิด: เปิดรับความกังวล ให้ความช่วยเหลือ"""
+• ใจเปิด: เปิดรับความกังวล ให้ความช่วยเหลือ
+
+=== เมื่อไม่มีข้อมูล (สำคัญ!) ===
+❌ ห้ามตอบเดา ห้ามเดาหรือสิ่งที่ไม่แน่ใจ
+✅ เมื่อไม่รู้หรือไม่มีข้อมูล ให้ตอบ:
+   "รอสักครู่นะคะ แอดมินวีนาเช็คให้ค่ะ"
+   หรือ "ปรึกษาแอดมินให้นะคะ"
+
+ตัวอย่างคำถามที่ห้ามตอบเดา:
+- รายละเอียดเฉพาะของทริปแต่ละรอบที่ไม่อยู่ใน database
+- เงื่อนไขพิเศษที่ไม่ได้ระบุ
+- ราคาสำหรับทริปใหม่ที่ไม่อยู่ใน database
+- โปรโมชั่นหรือส่วนลดที่ไม่มีข้อมูล
+- คำถามเฉพาะเจาะจงที่ต้องขอมีผู้บริหาร"""
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
@@ -290,6 +350,10 @@ Website: https://weena2d1n.com/
         "role": "assistant",
         "content": bot_message
     })
+
+    # ตรวจสอบว่าบอทตอบว่าไม่รู้
+    if "รอสักครู่" in bot_message or "เช็คให้" in bot_message:
+        log_unanswerable_question(user_id, user_message)
 
     if len(user_conversations[user_id]) > 10:
         user_conversations[user_id] = user_conversations[user_id][-10:]
@@ -319,6 +383,70 @@ def handle_callback():
 @app.route('/health', methods=['GET'])
 def health():
     return {'status': 'healthy'}, 200
+
+@app.route('/unanswerable-questions', methods=['GET'])
+def get_unanswerable_questions():
+    """แสดงคำถามที่บอทไม่สามารถตอบได้"""
+    return {
+        'total': len(unanswerable_questions),
+        'questions': unanswerable_questions
+    }, 200
+
+@app.route('/unanswerable-questions/clear', methods=['POST'])
+def clear_unanswerable_questions():
+    """ล้างรายการคำถามที่ไม่สามารถตอบได้"""
+    global unanswerable_questions
+    count = len(unanswerable_questions)
+    unanswerable_questions = []
+    return {'cleared': count}, 200
+
+@app.route('/admin/answer', methods=['POST'])
+def admin_answer_question():
+    """แอดมินตอบคำถามที่ค้างและส่งตอบกลับไปลูกค้า"""
+    data = request.json
+    question_index = data.get('question_index')
+    answer = data.get('answer')
+    
+    if question_index is None or not answer:
+        return {'error': 'กรุณาระบุ question_index และ answer'}, 400
+    
+    if question_index < 0 or question_index >= len(unanswerable_questions):
+        return {'error': 'question_index ไม่ถูกต้อง'}, 400
+    
+    question = unanswerable_questions[question_index]
+    user_id = question['user_id']
+    
+    # ส่งคำตอบไปลูกค้าผ่าน Line Push Message
+    try:
+        send_to_customer_line(user_id, answer)
+        
+        # ลบคำถามนี้ออกจากรายการ
+        unanswerable_questions.pop(question_index)
+        
+        return {
+            'success': True,
+            'message': f'ตอบแล้วกับ User: {user_id}',
+            'remaining': len(unanswerable_questions)
+        }, 200
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+def send_to_customer_line(user_id, message):
+    """ส่งข้อความไปลูกค้าผ่าน Push API"""
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
+    }
+    
+    payload = {
+        "to": user_id,
+        "messages": [{"type": "text", "text": message}]
+    }
+    
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code != 200:
+        raise Exception(f"Failed to send message: {response.text}")
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
