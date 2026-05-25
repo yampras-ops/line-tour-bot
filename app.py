@@ -44,7 +44,7 @@ def verify_line_signature(body, signature):
     )
 
 def send_message_to_line(reply_token, text):
-    url = "https://api.line.biz/v2/bot/message/reply"
+    url = "https://api.line.me/v2/bot/message/reply"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
