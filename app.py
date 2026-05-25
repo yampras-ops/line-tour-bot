@@ -65,7 +65,7 @@ def get_bot_response(user_id, user_message):
 ตอบเป็นไทยกระชับและเป็นมิตร"""
     
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
+        model="claude-sonnet-4-5",
         max_tokens=500,
         system=system_prompt,
         messages=user_conversations[user_id]
